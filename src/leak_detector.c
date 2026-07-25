@@ -78,3 +78,35 @@ void leak_free(void *ptr, const char *file, int line) {
     fprintf(stderr, "[ATTENZIONE] Free non valida di puntatore %p in %s:%d\n", ptr, file, line);
     free(ptr);
 }
+
+void* leak_calloc(size_t num, size_t size, const char *file, int line) {
+    size_t total = num * size;
+    void *ptr = leak_malloc(total, file, line);
+    if (ptr) {
+        memset(ptr, 0, total);
+    }
+    return ptr;
+}
+
+void* leak_realloc(void *ptr, size_t new_size, const char *file, int line) {
+    if (!ptr) return leak_malloc(new_size, file, line);
+    if (new_size == 0) {
+        leak_free(ptr, file, line);
+        return NULL;
+    }
+
+    void *new_ptr = leak_malloc(new_size, file, line);
+    if (new_ptr) {
+        AllocNode *curr = head;
+        while (curr) {
+            if (curr->ptr == ptr) {
+                size_t copy_size = (curr->size < new_size) ? curr->size : new_size;
+                memcpy(new_ptr, ptr, copy_size);
+                break;
+            }
+            curr = curr->next;
+        }
+        leak_free(ptr, file, line);
+    }
+    return new_ptr;
+}
