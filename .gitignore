@@ -1,0 +1,17 @@
+# Build output ed eseguibili
+bin/
+*.exe
+*.o
+*.obj
+
+# Database SQLite generati a runtime
+memory_analyzer.db
+memory_metrics.db
+
+# IDE ed Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
