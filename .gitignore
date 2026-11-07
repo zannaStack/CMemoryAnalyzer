@@ -9,6 +9,7 @@ memory_analyzer.db
 memory_metrics.db
 
 # IDE ed Editor
+.vs/
 .vscode/
 .idea/
 

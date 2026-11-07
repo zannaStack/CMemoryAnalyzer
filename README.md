@@ -1,136 +1,106 @@
-# 🔬 C Memory Analyzer & Heap Profiler (C11 + Win32/POSIX + SQLite)
+# 🔍 C Memory Leak Detector
 
-> Strumento di analisi della memoria di sistema a basso livello e profiler personalizzato per heap con rilevamento di memory leak e buffer overflow tramite canary bytes, con persistenza delle metriche su database relazionale SQLite.
-
----
-
-## 🎯 Obiettivi e Competenze Ingegneristiche Dimostrate
-
-Questo progetto è sviluppato per esplorare la gestione della memoria nei sistemi operativi moderni attraverso il linguaggio C standard (C11):
-1. **Analisi Hardware & OS Level**: Interfacciamento diretto con le API di sistema (Win32 `GlobalMemoryStatusEx` e `GetProcessMemoryInfo` su Windows; `/proc/meminfo` su ambienti POSIX/Linux) per estrarre in tempo reale metriche su RAM fisica, Virtual Memory, Working Set e Page Faults.
-2. **Custom Heap Allocator & Leak Detector ("Mini-Valgrind")**: Strumentazione delle chiamate `malloc`, `calloc`, `realloc` e `free` tramite header opachi e liste doppiamente concatenate.
-3. **Integrazione Canary Guard Bytes**: Protezione contro **Buffer Overflow** e **Underflow** inserendo sequenze di byte magiche (`0xDEADBEEF` all'inizio e `0xC0DEDEAD` alla fine del payload) verificate a runtime e in fase di deallocazione.
-4. **Database Relazionale SQLite C API**: Persistenza storica dei campionamenti e delle statistiche heap interrogabili via SQL standard.
+> Un tracciatore leggero delle allocazioni dinamiche e rilevatore di memory leak scritto in **C standard (C99)**.
 
 ---
 
-## 🏗️ Architettura del Sistema
+## 💡 Perché ho creato questo progetto?
 
-```
-                  [C MEMORY ANALYZER]
-                           │
-       ┌───────────────────┼───────────────────┐
-       ▼                                       ▼
-[System & Process Inspector]         [Heap Memory Profiler]
- ├── RAM Totale / Disponibile         ├── Header con Metadati e Timestamp
- ├── Working Set per PID              ├── Doubly Linked List allocazioni attive
- ├── Private Bytes & Heap             ├── Canary Guard Bytes (0xDEADBEEF / 0xC0DEDEAD)
- └── Page Fault Tracking              └── Report Leak a fine esecuzione
-       │                                       │
-       └───────────────────┬───────────────────┘
-                           ▼
-              [SQLite C API Integration]
-              ├── Tabella: system_snapshots
-              ├── Tabella: process_metrics
-              └── Tabella: heap_profiles
-```
+Durante lo studio per l'esame di **Informatica 1** (superato con 30 e Lode presso l'Università di Bologna), uno degli scogli principali è sempre stata la corretta gestione dello heap: quando si implementano liste concatenate, code, pile o alberi binari, dimenticare anche una sola chiamata a `free()` porta a un **memory leak**.
+
+Su Linux si usa spesso **Valgrind**, ma lavorando in ambiente Windows con MinGW/GCC non è disponibile nativamente senza WSL. 
+
+Ho quindi sviluppato questo piccolo tool autonomo:
+- **Zero dipendenze esterne**: solo C standard puro, compilabile ovunque (Windows, Linux, macOS).
+- **Trasparente**: basta includere l'header e compilare il file `.c` insieme al proprio progetto. Non serve modificare le chiamate esistenti nel codice (`malloc` e `free` continuano a funzionare come al solito).
+- **Report chiaro e utile**: alla fine dell'esecuzione mostra subito **in quale file e a quale riga** è avvenuta l'allocazione dimenticata, insieme al numero esatto di byte persi.
 
 ---
 
-## 🗄️ Struttura delle Tabelle SQL (SQLite)
+## ⚙️ Come Funziona
 
-```sql
--- Snapshot globali della memoria fisica del PC
-CREATE TABLE system_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    total_ram_mb REAL NOT NULL,
-    avail_ram_mb REAL NOT NULL,
-    used_ram_mb REAL NOT NULL,
-    mem_load_pct INTEGER NOT NULL,
-    total_page_mb REAL NOT NULL,
-    avail_page_mb REAL NOT NULL
-);
+Il funzionamento si basa su due elementi chiave del linguaggio C:
 
--- Metriche granulari per singolo Process ID (PID)
-CREATE TABLE process_metrics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_id INTEGER,
-    pid INTEGER NOT NULL,
-    proc_name TEXT NOT NULL,
-    working_set_mb REAL NOT NULL,
-    peak_ws_mb REAL NOT NULL,
-    private_bytes_mb REAL NOT NULL,
-    page_faults INTEGER NOT NULL,
-    FOREIGN KEY (snapshot_id) REFERENCES system_snapshots(id)
-);
+1. **Macro del Preprocessore (`__FILE__` e `__LINE__`)**:
+   Nell'header `leak_detector.h`, le funzioni `malloc()`, `calloc()`, `realloc()` e `free()` vengono ridefinite:
+   ```c
+   #define malloc(size)  leak_malloc(size, __FILE__, __LINE__)
+   #define free(ptr)     leak_free(ptr, __FILE__, __LINE__)
+   ```
+   In questo modo il compilatore inietta le coordinate esatte del file sorgente a tempo di compilazione.
 
--- Storico dei report dell'Heap Profiler
-CREATE TABLE heap_profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    active_bytes INTEGER NOT NULL,
-    peak_bytes INTEGER NOT NULL,
-    total_allocations INTEGER NOT NULL,
-    leaked_bytes INTEGER NOT NULL
-);
+2. **Lista Concatenata dei Blocchi Attivi**:
+   Ogni volta che viene allocata memoria, il tracker salva l'indirizzo restituito, la dimensione e la posizione sorgente all'interno di una lista concatenata interna.
+   Quando viene chiamata `free()`, il nodo corrispondente viene rimosso. Se al termine del programma la lista contiene ancora elementi, significa che ci sono deallocazioni mancanti.
+
+---
+
+## 📋 Esempio di Output a Terminale
+
+Eseguendo il file dimostrativo (`main.c`), viene simulata sia un'allocazione corretta sia una lista in cui un nodo viene lasciato orfano:
+
+```text
+==================================================
+       DEMO: C Memory Leak Detector
+==================================================
+
+[Test 1] Allocazione di un vettore dinamico e rilascio corretto...
+         Array popolato con successo.
+         Memoria liberata correttamente tramite free().
+
+[Test 2] Creazione di una lista dinamica e simulazione di un leak...
+         Liberati solo 2 elementi su 3 (1 nodo lasciato intenzionalmente orfano).
+
+==================================================
+             REPORT STATISTICHE MEMORIA           
+==================================================
+ Allocazioni effettuate : 5 (184 byte totali)
+ Deallocazioni eseguite : 4 (168 byte liberati)
+ Picco di memoria usato : 184 byte
+--------------------------------------------------
+ [!] ATTENZIONE: Rilevati blocchi non liberati:
+
+  #1 -> 16 byte dimenticati
+         Allocato in : src/main.c, riga 32
+         Indirizzo   : 000002166e5714e0
+
+ Totale memoria persa : 16 byte in 1 blocchi.
+==================================================
 ```
 
 ---
 
-## 🛡️ Rilevamento Buffer Overflow con Canary Bytes
+## 🚀 Come Compilare ed Eseguire
 
-Ogni blocco allocato tramite `TRACK_MALLOC(sz)` presenta questa struttura di memoria in memoria:
-
-```
-[ MemoryBlockHeader ] [ CANARY HEAD (0xDEADBEEF) ] [ USER PAYLOAD (N bytes) ] [ CANARY TAIL (0xC0DEDEAD) ]
-```
-
-Se il programma scrive anche un solo byte oltre la dimensione allocata (`buffer overflow`), il `CANARY TAIL` viene corrotto. La funzione `mem_track_check_corruption()` o `TRACK_FREE()` intercetta immediatamente l'anomalia prima che possa causare vulnerabilità o crash silenziosi.
-
----
-
-## 🚀 Compilazione ed Esecuzione
-
-### Prerequisiti
-- Compilatore **GCC** (MSYS2, MinGW o Linux GCC) con supporto C11.
-- Su Windows non sono necessarie librerie esterne: SQLite amalgamation (`sqlite3.c` e `sqlite3.h`) è integrato direttamente nel repository e linkato a tempo di compilazione.
-
-### Compilazione e Avvio Rapido su Windows (Batch script)
+### Con GCC su Windows o Linux:
 ```bash
+gcc -Wall -Wextra -std=c99 -Iinclude src/main.c src/leak_detector.c -o leak_detector
+./leak_detector
+```
+
+### Tramite script batch (Windows):
+```cmd
 build.bat
 ```
 
-### Esecuzione della Suite di Test Integrata
+### Tramite Makefile:
 ```bash
-build.bat --test
-```
-
-### Compilazione con Makefile
-```bash
-make
-make test
-```
-
-### Compilazione Manuale con GCC
-```bash
-gcc -std=c11 -O2 -Wall -Wextra -Iinclude src/sqlite3.c src/sys_mem.c src/mem_tracker.c src/db_storage.c src/main.c -o bin/memory_analyzer.exe -lpsapi
+make run
 ```
 
 ---
 
-## 🎮 Funzionalità da Menu Interattivo
-1. **Analisi Istantanea Memoria di Sistema**: Visualizza RAM in uso/libera, Paging file e salva lo snapshot su SQLite.
-2. **Ispezione Memoria di un Processo**: Inserisci un PID qualsiasi e ispeziona Working Set, Peak RAM e Page Faults.
-3. **Monitoraggio Continuo**: Campionamento periodico ad intervalli di tempo definiti con logging continuo su database.
-4. **Dimostrazione Heap Profiler**: Dimostra l'audit di allocazioni attive, picco di memoria e tracciamento dei memory leaks con riga e file di origine.
-5. **Test Buffer Overflow**: Simula una corruzione volontaria e mostra l'intercettazione dei Canary Bytes.
-6. **Storico Metriche da SQLite**: Visualizza la cronologia degli snapshot registrati nel DB.
+## 🛠️ Come integrarlo in un altro progetto C
+
+1. Copia `include/leak_detector.h` e `src/leak_detector.c` nel tuo progetto.
+2. Includi `#include "leak_detector.h"` nei tuoi file sorgente.
+3. Chiama `leak_report()` prima del `return 0;` nel tuo `main()`.
+4. Compila includendo `leak_detector.c`.
 
 ---
 
-## 👤 Autore
-**Fabio Zanetti**  
-Studente di Ingegneria Informatica @ Università di Bologna  
-- Portfolio: [fabiozanetti.it](https://fabiozanetti-it.vercel.app)  
-- GitHub: [@zannaStack](https://github.com/zannaStack)
+## 🎓 Competenze Consolidate
+- Allocazione dinamica dello heap (`malloc`, `calloc`, `realloc`, `free`).
+- Gestione di puntatori opachi (`void*`) e strutture dati a lista concatenata.
+- Utilizzo avanzato delle macro del preprocessore C (`__FILE__`, `__LINE__`).
+- Diagnostica e tracciamento a basso livello senza strumenti esterni pesanti.
